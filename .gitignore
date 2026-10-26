@@ -1,0 +1,25 @@
+# HarmonyOS
+node_modules/
+oh_modules/
+.hvigor/
+.cxx/
+build/
+**/build/
+local.properties
+.idea/
+*.hap
+*.hsp
+*.har
+
+# Native build products
+entry/libs/*/libveilcore.so
+*.so
+!entry/src/main/cpp/libs/**/*.so
+
+# Go
+core/veil
+core/veild
+*.test
+
+# Go static archive produced by scripts/build-core.sh (20 MB)
+entry/src/main/cpp/libs/

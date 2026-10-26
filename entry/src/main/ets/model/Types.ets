@@ -1,0 +1,496 @@
+/**
+ * Wire model shared with the Go core.
+ *
+ * Every interface here mirrors a struct in core/internal/{state,config,rpc}.
+ * The field names are snake_case because they are literally the JSON keys the
+ * core emits; do not "clean them up" into camelCase, the Go side will not
+ * follow you.
+ *
+ * This file is the ONLY place allowed to describe JSON shapes. UI code casts at
+ * the boundary (LocalRpc / CoreApi) and then works with these types.
+ */
+
+// ---------------------------------------------------------------------------
+// state.Status  (core/internal/state/status.go)
+// ---------------------------------------------------------------------------
+
+export interface TunStatus {
+  enabled: boolean;
+  fd: number;
+  mtu: number;
+  up: boolean;
+  err?: string;
+}
+
+export interface InboundStatus {
+  name: string;
+  addr: string;
+  up: boolean;
+  conn: number;
+  err?: string;
+}
+
+export interface Health {
+  heartbeat_ago_ms: number;
+  goroutines: number;
+  open_fds: number;
+  heap_mb: number;
+  restarts: number;
+  last_error?: string;
+  started_unix: number;
+}
+
+export interface Traffic {
+  up: number;
+  down: number;
+  up_rate: number;
+  down_rate: number;
+  active: number;
+  total_conn: number;
+}
+
+export interface NodeStatus {
+  tag: string;
+  type: string;
+  remark?: string;
+  delay_ms: number;
+  alive: boolean;
+  tested_at?: number;
+}
+
+export interface GroupStatus {
+  tag: string;
+  type: string;
+  now: string;
+  members: NodeStatus[];
+}
+
+export interface DNSStatus {
+  enabled: boolean;
+  listen?: string;
+  err?: string;
+}
+
+export interface Status {
+  phase: string;
+  reason?: string;
+  since_unix: number;
+  uptime_sec: number;
+  version: string;
+  mode: string;
+  tun: TunStatus;
+  inbounds: InboundStatus[];
+  health: Health;
+  traffic: Traffic;
+  groups: GroupStatus[];
+  dns: DNSStatus;
+}
+
+// ---------------------------------------------------------------------------
+// state.Conn
+// ---------------------------------------------------------------------------
+
+export interface Conn {
+  id: number;
+  start: number;
+  network: string;
+  source: string;
+  dest: string;
+  outbound: string;
+  rule?: string;
+  up: number;
+  down: number;
+  chain?: string;
+}
+
+// ---------------------------------------------------------------------------
+// config.Config  (core/internal/config/config.go)
+// ---------------------------------------------------------------------------
+
+export interface RealityConfig {
+  public_key: string;
+  short_id?: string;
+  spider_x?: string;
+}
+
+export interface TlsConfig {
+  enabled: boolean;
+  server_name?: string;
+  insecure?: boolean;
+  alpn?: string[];
+  fingerprint?: string;
+  reality?: RealityConfig;
+}
+
+export interface TransportConfig {
+  type: string;
+  path?: string;
+  host?: string;
+  headers?: Record<string, string>;
+  early_data?: number;
+  service_name?: string;
+}
+
+export interface Node {
+  tag: string;
+  type: string;
+  server: string;
+  port: number;
+  uuid?: string;
+  password?: string;
+  method?: string;
+  flow?: string;
+  alter_id?: number;
+  udp?: boolean;
+  tls?: TlsConfig;
+  transport?: TransportConfig;
+  remark?: string;
+  source?: string;
+}
+
+export interface Group {
+  tag: string;
+  type: string;
+  members: string[];
+  url?: string;
+  interval?: number;
+  tolerance?: number;
+  selected?: string;
+}
+
+export interface Rule {
+  type: string;
+  value: string;
+  action: string;
+  no_resolve?: boolean;
+}
+
+export interface DNSServer {
+  tag: string;
+  addr: string;
+  detour?: string;
+  domains?: string[];
+}
+
+export interface DNSConfig {
+  enable: boolean;
+  listen?: string;
+  servers: DNSServer[];
+  final?: string;
+  cache: boolean;
+}
+
+export interface TunConfig {
+  mtu: number;
+  ipv4: string;
+  ipv6?: string;
+  dns: string;
+  auto_route: boolean;
+  bypass_lan: boolean;
+  routes?: string[];
+  bypass_apps?: string[];
+  allow_apps?: string[];
+}
+
+export interface Subscription {
+  name: string;
+  url: string;
+  interval?: number;
+  updated?: number;
+}
+
+export interface VeilConfig {
+  version: number;
+  log_level: string;
+  mode: string;
+  mixed: string;
+  api?: string;
+  tun: TunConfig;
+  dns: DNSConfig;
+  nodes: Node[];
+  groups: Group[];
+  rules: Rule[];
+  subscriptions: Subscription[];
+}
+
+// ---------------------------------------------------------------------------
+// rpc.* request/response payloads
+// ---------------------------------------------------------------------------
+
+export interface EmptyParams {}
+
+export interface StartParams {
+  tun_fd: number;
+}
+
+export interface ImportParams {
+  text: string;
+  name?: string;
+  source?: string;
+  urls?: string[];
+}
+
+export interface ImportResult {
+  added: number;
+  updated: number;
+  failed: number;
+  errors?: string[];
+  tags?: string[];
+}
+
+export interface SelectParams {
+  group: string;
+  tag: string;
+}
+
+export interface DelayParams {
+  tag: string;
+  timeout_ms?: number;
+}
+
+export interface DelayResult {
+  tag: string;
+  delay_ms: number;
+  err?: string;
+}
+
+export interface DeleteParams {
+  tag: string;
+}
+
+export interface ModeParams {
+  mode: string;
+}
+
+export interface SubParams {
+  name: string;
+  url: string;
+}
+
+export interface SubUpdateParams {
+  name: string;
+}
+
+export interface ConnParams {
+  id: number;
+}
+
+export interface LogsParams {
+  after_id?: number;
+  limit?: number;
+  level?: string;
+}
+
+export interface LogLine {
+  id: number;
+  time: number;
+  level: string;
+  msg: string;
+}
+
+export interface LogsResult {
+  lines: LogLine[];
+  last_id: number;
+}
+
+export interface SetConfigParams {
+  config: VeilConfig;
+}
+
+export interface TunParams {
+  fd: number;
+  mtu?: number;
+}
+
+export interface VersionResult {
+  version: string;
+  commit?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Envelope shapes of the local socket protocol (see ets/README.md)
+// ---------------------------------------------------------------------------
+
+/** client -> core */
+export interface RpcRequest {
+  id: number;
+  method: string;
+  params: Object;
+}
+
+/** core -> client, reply to RpcRequest */
+export interface RpcReply {
+  id: number;
+  ok: boolean;
+  result?: Object;
+  error?: string;
+}
+
+/** first line a host connection sends, so the core knows who it is talking to */
+export interface RoleHello {
+  role: string;
+}
+
+/** core -> host, only ever received by the VPN extension process */
+export interface HostRequest {
+  host: boolean;
+  id: number;
+  method: string;
+  params?: Object;
+}
+
+/** host -> core */
+export interface HostReply {
+  id: number;
+  ok: boolean;
+  result?: Object;
+  error?: string;
+}
+
+/** params of the "protect" host request */
+export interface ProtectParams {
+  fd: number;
+}
+
+/** params of the "tun_up" host request */
+export interface TunUpParams {
+  mtu?: number;
+  ipv4?: string;
+  ipv6?: string;
+  dns?: string;
+}
+
+/** result of a successful "tun_up" */
+export interface TunUpResult {
+  fd: number;
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle constants (mirror state.Phase)
+// ---------------------------------------------------------------------------
+
+export class Phase {
+  static readonly STOPPED: string = 'stopped';
+  static readonly STARTING: string = 'starting';
+  static readonly RUNNING: string = 'running';
+  static readonly DEGRADED: string = 'degraded';
+  static readonly STOPPING: string = 'stopping';
+  static readonly FAILED: string = 'failed';
+
+  static isActive(phase: string): boolean {
+    return phase === Phase.STARTING || phase === Phase.RUNNING ||
+      phase === Phase.DEGRADED || phase === Phase.STOPPING;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Placeholders used before the first status arrives, so views never render
+// `undefined`. They are deliberately "unknown", not "connected".
+// ---------------------------------------------------------------------------
+
+export function emptyTun(): TunStatus {
+  const t: TunStatus = { enabled: false, fd: -1, mtu: 0, up: false };
+  return t;
+}
+
+export function emptyHealth(): Health {
+  const h: Health = {
+    heartbeat_ago_ms: 0, goroutines: 0, open_fds: 0, heap_mb: 0, restarts: 0, started_unix: 0
+  };
+  return h;
+}
+
+export function emptyTraffic(): Traffic {
+  const t: Traffic = { up: 0, down: 0, up_rate: 0, down_rate: 0, active: 0, total_conn: 0 };
+  return t;
+}
+
+export function emptyDns(): DNSStatus {
+  const d: DNSStatus = { enabled: false };
+  return d;
+}
+
+export function emptyConfig(): VeilConfig {
+  const tun: TunConfig = {
+    mtu: 1400, ipv4: '172.19.0.1', dns: '172.19.0.2', auto_route: true, bypass_lan: true
+  };
+  const dns: DNSConfig = { enable: true, servers: [], cache: true };
+  const c: VeilConfig = {
+    version: 1,
+    log_level: 'info',
+    mode: 'rule',
+    mixed: '127.0.0.1:7890',
+    tun: tun,
+    dns: dns,
+    nodes: [],
+    groups: [],
+    rules: [],
+    subscriptions: []
+  };
+  return c;
+}
+
+/**
+ * The core marshals Go nil slices as JSON `null`. ArkTS has no optional
+ * chaining on array iteration, so a `null` array is a hard TypeError at
+ * runtime — normalise every list once, right after decoding.
+ */
+export function normalizeStatus(raw: Status): Status {
+  const s: Status = raw;
+  if (s.groups === undefined || s.groups === null) {
+    s.groups = [];
+  }
+  for (let i = 0; i < s.groups.length; i++) {
+    if (s.groups[i].members === undefined || s.groups[i].members === null) {
+      s.groups[i].members = [];
+    }
+  }
+  if (s.inbounds === undefined || s.inbounds === null) {
+    s.inbounds = [];
+  }
+  return s;
+}
+
+/** Same null-slice problem as status: normalise a decoded config. */
+export function normalizeConfig(raw: VeilConfig): VeilConfig {
+  const c: VeilConfig = raw;
+  if (c.nodes === undefined || c.nodes === null) {
+    c.nodes = [];
+  }
+  if (c.groups === undefined || c.groups === null) {
+    c.groups = [];
+  }
+  if (c.rules === undefined || c.rules === null) {
+    c.rules = [];
+  }
+  if (c.subscriptions === undefined || c.subscriptions === null) {
+    c.subscriptions = [];
+  }
+  if (c.dns !== undefined && c.dns !== null &&
+    (c.dns.servers === undefined || c.dns.servers === null)) {
+    c.dns.servers = [];
+  }
+  for (let i = 0; i < c.groups.length; i++) {
+    if (c.groups[i].members === undefined || c.groups[i].members === null) {
+      c.groups[i].members = [];
+    }
+  }
+  return c;
+}
+
+export function emptyStatus(): Status {
+  const s: Status = {
+    phase: Phase.STOPPED,
+    since_unix: 0,
+    uptime_sec: 0,
+    version: '',
+    mode: 'rule',
+    tun: emptyTun(),
+    inbounds: [],
+    health: emptyHealth(),
+    traffic: emptyTraffic(),
+    groups: [],
+    dns: emptyDns()
+  };
+  return s;
+}

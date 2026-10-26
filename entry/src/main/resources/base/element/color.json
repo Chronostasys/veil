@@ -1,0 +1,17 @@
+{
+  "color": [
+    { "name": "start_window_background", "value": "#F4F6F9" },
+    { "name": "veil_bg", "value": "#F4F6F9" },
+    { "name": "veil_surface", "value": "#FFFFFF" },
+    { "name": "veil_surface_alt", "value": "#EDF0F5" },
+    { "name": "veil_hairline", "value": "#E2E6EE" },
+    { "name": "veil_text", "value": "#0E1218" },
+    { "name": "veil_text_dim", "value": "#5B6474" },
+    { "name": "veil_text_faint", "value": "#96A0B0" },
+    { "name": "veil_teal", "value": "#0E9F8E" },
+    { "name": "veil_indigo", "value": "#5B5BE6" },
+    { "name": "veil_ok", "value": "#059669" },
+    { "name": "veil_warn", "value": "#D97706" },
+    { "name": "veil_err", "value": "#DC2626" }
+  ]
+}

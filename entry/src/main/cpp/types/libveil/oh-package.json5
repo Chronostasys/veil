@@ -1,0 +1,6 @@
+{
+  "name": "libveil.so",
+  "types": "./index.d.ts",
+  "version": "1.0.0",
+  "description": "NAPI shim for the Veil Go core (dlopen-based)"
+}

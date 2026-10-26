@@ -1,0 +1,160 @@
+package share
+
+import (
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+
+	"veil/internal/config"
+)
+
+// ParseText parses a plain-text node list: one share link per line. Blank
+// lines, comments ('#', '//') and stray markdown are ignored. When no line
+// carries a scheme the whole text is treated as a base64 subscription body.
+//
+// Parsing never aborts on a bad line: failures are collected in the second
+// return value so one broken link cannot discard a whole subscription.
+func ParseText(text string) ([]config.Node, []error) {
+	text = strings.TrimPrefix(text, "\ufeff")
+	var nodes []config.Node
+	var errs []error
+
+	lines := strings.Split(text, "\n")
+	seenLink := false
+	for _, line := range lines {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+			continue
+		}
+		if !strings.Contains(line, "://") {
+			continue
+		}
+		seenLink = true
+		n, err := Parse(line)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("line %q: %w", truncate(line, 48), err))
+			continue
+		}
+		nodes = append(nodes, n)
+	}
+
+	if !seenLink {
+		// Possibly a base64-encoded subscription dumped as text.
+		if decoded := b64Text(text); decoded != "" && strings.Contains(decoded, "://") {
+			return ParseText(decoded)
+		}
+		if strings.TrimSpace(text) == "" {
+			return nil, nil
+		}
+		errs = append(errs, fmt.Errorf("share: no share link found in text"))
+		return nil, errs
+	}
+	return finalize(nodes), errs
+}
+
+// ParseSubscription parses a subscription body, which may be plain text, a
+// base64 blob of share links, or a Clash YAML document. source is recorded on
+// every node so the UI can group nodes by subscription.
+func ParseSubscription(body []byte, source string) ([]config.Node, []error) {
+	text := strings.TrimPrefix(string(body), "\ufeff")
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil, []error{fmt.Errorf("share: empty subscription body")}
+	}
+
+	var nodes []config.Node
+	var errs []error
+
+	switch {
+	case strings.Contains(trimmed, "://"):
+		nodes, errs = ParseText(trimmed)
+	case looksLikeClash(trimmed):
+		nodes, errs = ParseClashYAML([]byte(trimmed), source)
+	default:
+		decoded := b64Text(trimmed)
+		if decoded == "" {
+			return nil, []error{fmt.Errorf("share: subscription is neither plain text, base64 nor YAML")}
+		}
+		decoded = strings.TrimPrefix(decoded, "\ufeff")
+		if looksLikeClash(decoded) {
+			nodes, errs = ParseClashYAML([]byte(decoded), source)
+		} else {
+			nodes, errs = ParseText(decoded)
+		}
+	}
+
+	for i := range nodes {
+		if source != "" {
+			nodes[i].Source = source
+		}
+	}
+	return nodes, errs
+}
+
+// looksLikeClash reports whether s starts a Clash config with a proxies list.
+func looksLikeClash(s string) bool {
+	head := s
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	return strings.Contains(head, "proxies:") || strings.HasPrefix(strings.TrimSpace(head), "proxy-groups:")
+}
+
+// finalize de-duplicates nodes and makes every tag unique. Nodes are compared
+// on (type, server, port, credential, transport); the first occurrence wins.
+// Repeated tags get a "-2", "-3", ... suffix.
+func finalize(nodes []config.Node) []config.Node {
+	out := make([]config.Node, 0, len(nodes))
+	seen := make(map[string]bool, len(nodes))
+	tags := make(map[string]bool, len(nodes))
+
+	for _, n := range nodes {
+		key := dedupeKey(n)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		base := NormalizeTag(n.Remark)
+		if base == "" {
+			base = fmt.Sprintf("%s-%s-%d", n.Type, n.Server, n.Port)
+		}
+		tag := base
+		for i := 2; tags[tag]; i++ {
+			tag = base + "-" + strconv.Itoa(i)
+		}
+		tags[tag] = true
+		n.Tag = tag
+		out = append(out, n)
+	}
+	return out
+}
+
+// dedupeKey builds the identity string used for duplicate detection.
+func dedupeKey(n config.Node) string {
+	cred := n.UUID + "|" + n.Password + "|" + n.Method
+	var tr string
+	if n.Transport != nil {
+		tr = n.Transport.Type + "|" + n.Transport.Path + "|" + n.Transport.Host + "|" + n.Transport.ServiceName
+		if len(n.Transport.Headers) > 0 {
+			keys := make([]string, 0, len(n.Transport.Headers))
+			for k := range n.Transport.Headers {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				tr += "|" + k + "=" + n.Transport.Headers[k]
+			}
+		}
+	}
+	var tlsPart string
+	if n.TLS != nil {
+		tlsPart = strconv.FormatBool(n.TLS.Enabled) + "|" + n.TLS.ServerName
+		if n.TLS.Reality != nil {
+			tlsPart += "|" + n.TLS.Reality.PublicKey + "|" + n.TLS.Reality.ShortID
+		}
+	}
+	return strings.ToLower(n.Type) + "|" + strings.ToLower(n.Server) + "|" +
+		strconv.Itoa(n.Port) + "|" + cred + "|" + tr + "|" + tlsPart
+}

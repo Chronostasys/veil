@@ -1,0 +1,11 @@
+{
+  "modelVersion": "26.0.0",
+  "name": "veil",
+  "version": "1.0.0",
+  "description": "Veil — a modern proxy client for HarmonyOS NEXT",
+  "main": "",
+  "author": "bobli",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {}
+}

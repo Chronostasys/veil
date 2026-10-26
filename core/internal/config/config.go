@@ -1,0 +1,389 @@
+// Package config defines Veil's on-disk configuration model.
+//
+// The model is deliberately a plain data structure: parsing, validation and
+// migration live here; runtime behaviour lives in internal/engine.
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// Mode selects the routing policy.
+const (
+	ModeRule   = "rule"
+	ModeGlobal = "global"
+	ModeDirect = "direct"
+)
+
+// Node is one upstream proxy endpoint.
+type Node struct {
+	Tag       string     `json:"tag"`
+	Type      string     `json:"type"` // vless | vmess | trojan | ss | hysteria2 | socks | http | direct
+	Server    string     `json:"server"`
+	Port      int        `json:"port"`
+	UUID      string     `json:"uuid,omitempty"`
+	Password  string     `json:"password,omitempty"`
+	Method    string     `json:"method,omitempty"` // shadowsocks cipher
+	Flow      string     `json:"flow,omitempty"`   // xtls-rprx-vision
+	AlterID   int        `json:"alter_id,omitempty"`
+	UDP       *bool      `json:"udp,omitempty"`
+	TLS       *TLS       `json:"tls,omitempty"`
+	Transport *Transport `json:"transport,omitempty"`
+	Remark    string     `json:"remark,omitempty"` // display name from the share link
+	Source    string     `json:"source,omitempty"` // subscription name, empty for manual
+}
+
+// Addr returns "host:port".
+func (n Node) Addr() string { return net.JoinHostPort(n.Server, fmt.Sprint(n.Port)) }
+
+// SupportsUDP reports whether UDP relaying is enabled for this node.
+func (n Node) SupportsUDP() bool { return n.UDP == nil || *n.UDP }
+
+// TLS holds transport security settings.
+type TLS struct {
+	Enabled     bool     `json:"enabled"`
+	ServerName  string   `json:"server_name,omitempty"`
+	Insecure    bool     `json:"insecure,omitempty"`
+	ALPN        []string `json:"alpn,omitempty"`
+	Fingerprint string   `json:"fingerprint,omitempty"` // uTLS fingerprint: chrome, firefox, safari, randomized...
+	Reality     *Reality `json:"reality,omitempty"`
+}
+
+// Reality holds REALITY parameters (Xray-compatible).
+type Reality struct {
+	PublicKey string `json:"public_key"`
+	ShortID   string `json:"short_id,omitempty"`
+	SpiderX   string `json:"spider_x,omitempty"`
+}
+
+// Transport holds the stream layer settings.
+type Transport struct {
+	Type        string            `json:"type"` // tcp | ws | grpc | h2
+	Path        string            `json:"path,omitempty"`
+	Host        string            `json:"host,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	EarlyData   int               `json:"early_data,omitempty"`
+	ServiceName string            `json:"service_name,omitempty"`
+}
+
+// Group is a user-visible collection of nodes with a selection policy.
+type Group struct {
+	Tag       string   `json:"tag"`
+	Type      string   `json:"type"` // select | url-test | fallback | load-balance
+	Members   []string `json:"members"`
+	URL       string   `json:"url,omitempty"`      // latency probe URL
+	Interval  int      `json:"interval,omitempty"` // seconds
+	Tolerance int      `json:"tolerance,omitempty"`
+	// Selected is the user's choice, meaningful for select groups.
+	Selected string `json:"selected,omitempty"`
+}
+
+// Rule is one routing rule. Rules are evaluated top to bottom; the first match
+// wins, and Action names a node, a group, or one of the built-ins
+// "direct"/"reject".
+type Rule struct {
+	Type      string `json:"type"` // domain | domain-suffix | domain-keyword | domain-regex | ip-cidr | ip-cidr6 | geoip | port | network | process | final
+	Value     string `json:"value"`
+	Action    string `json:"action"`
+	NoResolve bool   `json:"no_resolve,omitempty"`
+}
+
+// DNSConfig configures name resolution for both the app and the tunnel.
+type DNSConfig struct {
+	Enable  bool        `json:"enable"`
+	Listen  string      `json:"listen,omitempty"` // address of the in-tunnel DNS server, e.g. 172.19.0.2:53
+	Servers []DNSServer `json:"servers"`
+	Final   string      `json:"final,omitempty"` // server tag used when no rule matches
+	Cache   bool        `json:"cache"`
+}
+
+// DNSServer is one upstream resolver.
+type DNSServer struct {
+	Tag     string   `json:"tag"`
+	Addr    string   `json:"addr"`             // ip:port, https://..., tls://...
+	Detour  string   `json:"detour,omitempty"` // outbound tag, empty = direct
+	Domains []string `json:"domains,omitempty"`
+}
+
+// TunConfig configures the VPN tun device.
+type TunConfig struct {
+	MTU        int      `json:"mtu"`
+	IPv4       string   `json:"ipv4"`
+	IPv6       string   `json:"ipv6,omitempty"`
+	DNS        string   `json:"dns"`
+	AutoRoute  bool     `json:"auto_route"`
+	BypassLAN  bool     `json:"bypass_lan"`
+	Routes     []string `json:"routes,omitempty"`
+	BypassApps []string `json:"bypass_apps,omitempty"`
+	AllowApps  []string `json:"allow_apps,omitempty"`
+}
+
+// Subscription is a remote node list.
+type Subscription struct {
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	Interval int    `json:"interval,omitempty"` // seconds; 0 disables auto update
+	Updated  int64  `json:"updated,omitempty"`  // unix seconds of last successful fetch
+}
+
+// Config is the whole application configuration.
+type Config struct {
+	Version       int            `json:"version"`
+	LogLevel      string         `json:"log_level"`
+	Mode          string         `json:"mode"`
+	Mixed         string         `json:"mixed"` // socks5+http listen address
+	API           string         `json:"api,omitempty"`
+	Tun           TunConfig      `json:"tun"`
+	DNS           DNSConfig      `json:"dns"`
+	Nodes         []Node         `json:"nodes"`
+	Groups        []Group        `json:"groups"`
+	Rules         []Rule         `json:"rules"`
+	Subscriptions []Subscription `json:"subscriptions"`
+}
+
+// Default returns a sane out-of-the-box configuration: a mixed inbound and a
+// rule set that keeps LAN/local traffic direct and sends everything else
+// through the selected node.
+func Default() Config {
+	return Config{
+		Version:  1,
+		LogLevel: "info",
+		Mode:     ModeRule,
+		Mixed:    "127.0.0.1:7890",
+		Tun: TunConfig{
+			// 1280 keeps TLS handshakes (1.5-4 KB) inside the tunnel: with a
+			// 1400 MTU, small cleartext requests passed while every HTTPS
+			// handshake stalled — the classic MSS/MTU symptom.
+			MTU:       1280,
+			IPv4:      "172.19.0.1",
+			DNS:       "172.19.0.2",
+			AutoRoute: true,
+			BypassLAN: true,
+		},
+		DNS: DNSConfig{
+			Enable: true,
+			Listen: "172.19.0.2:53",
+			Cache:  true,
+			Servers: []DNSServer{
+				// Encrypted DNS, so answers cannot be poisoned. These endpoints
+				// are reachable from a mainland network (1.1.1.1/dns.google are
+				// not), which is why the Cloudflare DoH版本 timed out.
+				{Tag: "remote", Addr: "https://doh.pub/dns-query"},
+				{Tag: "backup", Addr: "https://dns.alidns.com/dns-query"},
+			},
+			Final: "remote",
+		},
+		Rules: []Rule{
+			{Type: "geoip", Value: "private", Action: "direct"},
+			{Type: "domain-suffix", Value: "local", Action: "direct"},
+			{Type: "final", Action: ""},
+		},
+	}
+}
+
+// Validate reports the first structural problem in c.
+//
+// It also normalises nil slices to empty ones: the JSON encoding of a nil slice
+// is `null`, and the ArkTS UI iterates these arrays directly (a null array is a
+// hard TypeError that takes the whole app down).
+func (c *Config) Validate() error {
+	if c.Version == 0 {
+		c.Version = 1
+	}
+	if c.Nodes == nil {
+		c.Nodes = []Node{}
+	}
+	if c.Groups == nil {
+		c.Groups = []Group{}
+	}
+	if c.Rules == nil {
+		c.Rules = []Rule{}
+	}
+	if c.Subscriptions == nil {
+		c.Subscriptions = []Subscription{}
+	}
+	if c.Tun.MTU == 0 {
+		c.Tun.MTU = 1280
+	}
+	if c.Tun.MTU > 1280 {
+		// Existing configs kept 1400, where small cleartext requests passed but
+		// every TLS handshake stalled. Clamp it.
+		c.Tun.MTU = 1280
+	}
+	if c.DNS.Servers == nil {
+		c.DNS.Servers = []DNSServer{}
+	}
+	for i := range c.Groups {
+		if c.Groups[i].Members == nil {
+			c.Groups[i].Members = []string{}
+		}
+	}
+	switch c.Mode {
+	case "", ModeRule, ModeGlobal, ModeDirect:
+	default:
+		return fmt.Errorf("unknown mode %q", c.Mode)
+	}
+	if c.Mode == "" {
+		c.Mode = ModeRule
+	}
+	if c.LogLevel == "" {
+		c.LogLevel = "info"
+	}
+	tags := make(map[string]bool, len(c.Nodes)+2)
+	tags["direct"] = true
+	tags["reject"] = true
+	for i := range c.Nodes {
+		n := &c.Nodes[i]
+		if n.Tag == "" {
+			n.Tag = fmt.Sprintf("%s-%d", n.Type, i+1)
+		}
+		if tags[n.Tag] {
+			return fmt.Errorf("duplicate outbound tag %q", n.Tag)
+		}
+		tags[n.Tag] = true
+		if n.Type == "" {
+			return fmt.Errorf("node %q: missing type", n.Tag)
+		}
+		if n.Type != "direct" {
+			if n.Server == "" || n.Port <= 0 || n.Port > 65535 {
+				return fmt.Errorf("node %q: invalid server %s:%d", n.Tag, n.Server, n.Port)
+			}
+		}
+		switch n.Type {
+		case "vless", "vmess":
+			if n.UUID == "" {
+				return fmt.Errorf("node %q: missing uuid", n.Tag)
+			}
+		case "trojan", "hysteria2":
+			if n.Password == "" {
+				return fmt.Errorf("node %q: missing password", n.Tag)
+			}
+		case "ss":
+			if n.Method == "" || n.Password == "" {
+				return fmt.Errorf("node %q: missing ss method/password", n.Tag)
+			}
+		}
+		if n.Transport != nil && n.Transport.Type != "" && n.Transport.Type != "tcp" && n.Transport.Type != "ws" && n.Transport.Type != "grpc" && n.Transport.Type != "h2" {
+			return fmt.Errorf("node %q: unsupported transport %q", n.Tag, n.Transport.Type)
+		}
+	}
+	for i := range c.Groups {
+		g := &c.Groups[i]
+		if g.Tag == "" {
+			return fmt.Errorf("group %d: missing tag", i)
+		}
+		if tags[g.Tag] {
+			return fmt.Errorf("duplicate outbound tag %q", g.Tag)
+		}
+		tags[g.Tag] = true
+		if len(g.Members) == 0 {
+			return fmt.Errorf("group %q: no members", g.Tag)
+		}
+	}
+	for i, r := range c.Rules {
+		if r.Type == "" {
+			return fmt.Errorf("rule %d: missing type", i)
+		}
+		if r.Type != "final" && r.Value == "" {
+			return fmt.Errorf("rule %d: missing value", i)
+		}
+		if r.Action != "" && !tags[r.Action] {
+			return fmt.Errorf("rule %d: unknown action %q", i, r.Action)
+		}
+	}
+	return nil
+}
+
+// Load reads JSON from path. A missing file yields Default().
+func Load(path string) (Config, error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return Default(), nil
+	}
+	if err != nil {
+		return Config{}, err
+	}
+	var c Config
+	if err := json.Unmarshal(b, &c); err != nil {
+		return Config{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	migrateDNS(&c)
+	if err := c.Validate(); err != nil {
+		return Config{}, err
+	}
+	return c, nil
+}
+
+// Save writes c atomically to path.
+func Save(path string, c Config) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// migrateDNS repairs the pre-1.0 default that sent every query to 1.1.1.1
+// without a proxy detour: on a mainland network that resolver never answers, so
+// DNS (and therefore every app) looked broken even when the tunnel worked.
+func migrateDNS(c *Config) {
+	hasDoH := false
+	for _, srv := range c.DNS.Servers {
+		if strings.HasPrefix(srv.Addr, "https://") {
+			hasDoH = true
+		}
+	}
+	if !hasDoH {
+		// Old defaults resolved everything through a mainland UDP resolver, which
+		// poisons foreign names. Replace with encrypted DNS that is reachable
+		// from here.
+		c.DNS.Servers = []DNSServer{
+			{Tag: "remote", Addr: "https://doh.pub/dns-query"},
+			{Tag: "backup", Addr: "https://dns.alidns.com/dns-query"},
+		}
+		c.DNS.Final = "remote"
+		return
+	}
+	// An earlier default used Cloudflare, which a mainland egress cannot reach.
+	for i := range c.DNS.Servers {
+		if strings.Contains(c.DNS.Servers[i].Addr, "1.1.1.1") {
+			c.DNS.Servers[i].Addr = "https://doh.pub/dns-query"
+			c.DNS.Servers[i].Detour = ""
+		}
+	}
+	if c.DNS.Final != "remote" {
+		return
+	}
+	for _, srv := range c.DNS.Servers {
+		if srv.Detour != "" {
+			return
+		}
+	}
+	for i := range c.DNS.Servers {
+		if c.DNS.Servers[i].Tag == "remote" {
+			c.DNS.Servers[i].Addr = "119.29.29.29:53"
+		}
+	}
+	if len(c.DNS.Servers) == 0 {
+		c.DNS.Servers = []DNSServer{{Tag: "local", Addr: "223.5.5.5:53"}}
+	}
+	c.DNS.Final = c.DNS.Servers[0].Tag
+}
+
+// StripNodeName removes the "name" suffix conventions some subscriptions use.
+func StripNodeName(s string) string { return strings.TrimSpace(s) }
